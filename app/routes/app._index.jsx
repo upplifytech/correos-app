@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useFetcher } from "@remix-run/react";
 import {
   Page,
@@ -11,309 +11,223 @@ import {
   List,
   Link,
   InlineStack,
+  TextField,
+  Icon,
+  Banner,
+  Badge
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
+import { ProductsMajor, ChecklistIcon, ShipmentIcon } from "@shopify/polaris-icons";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
-
   return null;
-};
-
-export const action = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-          }
-        }
-      }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-        },
-      },
-    },
-  );
-  const responseJson = await response.json();
-  const product = responseJson.data.productCreate.product;
-  const variantId = product.variants.edges[0].node.id;
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyRemixTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
-  const variantResponseJson = await variantResponse.json();
-
-  return {
-    product: responseJson.data.productCreate.product,
-    variant: variantResponseJson.data.productVariantsBulkUpdate.productVariants,
-  };
 };
 
 export default function Index() {
   const fetcher = useFetcher();
   const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
-  const productId = fetcher.data?.product?.id.replace(
-    "gid://shopify/Product/",
-    "",
-  );
+  const [trackingNumber, setTrackingNumber] = useState("");
+  const [shipments, setShipments] = useState([]);
+  const [error, setError] = useState(null);
 
-  useEffect(() => {
-    if (productId) {
-      shopify.toast.show("Product created");
+  const isLoading = ["loading", "submitting"].includes(fetcher.state);
+
+  // Función para generar guía
+  const generateShippingLabel = () => {
+    fetcher.submit(
+      { 
+        action: "generate", 
+        shop: new URL(window.location).searchParams.get("shop") 
+      }, 
+      { 
+        method: "POST",
+        action: "/api/shipments" 
+      }
+    );
+  };
+
+  // Función para buscar tracking
+  const trackPackage = () => {
+    if (!trackingNumber) {
+      setError("Por favor ingrese un número de seguimiento");
+      return;
     }
-  }, [productId, shopify]);
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+    fetcher.load(`/api/tracking/${trackingNumber}`);
+  };
+
+  // Efecto para manejar resultados
+  useEffect(() => {
+    if (fetcher.data) {
+      if (fetcher.data.error) {
+        shopify.toast.show(fetcher.data.error);
+        setError(fetcher.data.error);
+      } else if (fetcher.data.guia) {
+        shopify.toast.show("Guía generada exitosamente");
+        setShipments(prev => [fetcher.data, ...prev]);
+      }
+    }
+  }, [fetcher.data]);
+
+  // Añadir useEffect para cargar envíos al iniciar
+  useEffect(() => {
+    fetcher.load("/api/shipments");
+  }, []);
+
+  // Modificar el listado:
+  {shipments.length === 0 ? (
+    <Banner>
+      <p>No hay envíos generados recientemente</p>
+    </Banner>
+  ) : (
+    <List>
+      {fetcher.data?.shipments?.map((shipment) => (
+        <List.Item key={shipment._id}>
+          <InlineStack align="space-between" blockAlign="center">
+            <Text as="span" variant="bodyMd">
+              Guía: {shipment.guia}
+              <Badge tone={shipment.estado === "generada" ? "info" : "success"}>
+                {shipment.estado}
+              </Badge>
+            </Text>
+            <Button
+              onClick={() => window.open(shipment.pdf, "_blank")}
+              variant="plain"
+            >
+              Descargar PDF
+            </Button>
+          </InlineStack>
+        </List.Item>
+      ))}
+    </List>
+  )}
 
   return (
     <Page>
-      <TitleBar title="Remix app template">
-        <button variant="primary" onClick={generateProduct}>
-          Generate a product
-        </button>
+      <TitleBar title="Correos de Costa Rica - Envíos">
+        <Button variant="primary" onClick={generateShippingLabel} loading={isLoading}>
+          Generar Guía de Envío
+        </Button>
       </TitleBar>
+
       <BlockStack gap="500">
         <Layout>
           <Layout.Section>
             <Card>
               <BlockStack gap="500">
+                {/* Sección de Seguimiento */}
+                <BlockStack gap="200">
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="h2" variant="headingMd">
+                      <Icon source={ShipmentIcon} /> Seguimiento de Paquetes
+                    </Text>
+                    <InlineStack gap="200">
+                      <TextField
+                        label=""
+                        value={trackingNumber}
+                        onChange={setTrackingNumber}
+                        placeholder="Ingrese número de guía"
+                        autoComplete="off"
+                      />
+                      <Button onClick={trackPackage} loading={isLoading}>
+                        Rastrear
+                      </Button>
+                    </InlineStack>
+                  </InlineStack>
+
+                  {error && (
+                    <Banner tone="critical">
+                      <p>{error}</p>
+                    </Banner>
+                  )}
+
+                  {fetcher.data?.tracking && (
+                    <Box padding="400" background="bg-surface-active">
+                      <Text variant="headingMd">Estado del Envío:</Text>
+                      <Badge tone={fetcher.data.tracking.estado === "Entregado" ? "success" : "attention"}>
+                        {fetcher.data.tracking.estado}
+                      </Badge>
+                      <Text as="p">Última actualización: {fetcher.data.tracking.fecha}</Text>
+                    </Box>
+                  )}
+                </BlockStack>
+
+                {/* Listado de Envíos Recientes */}
                 <BlockStack gap="200">
                   <Text as="h2" variant="headingMd">
-                    Congrats on creating a new Shopify app 🎉
+                    <Icon source={ChecklistIcon} /> Envíos Recientes
                   </Text>
-                  <Text variant="bodyMd" as="p">
-                    This embedded app template uses{" "}
-                    <Link
-                      url="https://shopify.dev/docs/apps/tools/app-bridge"
-                      target="_blank"
-                      removeUnderline
-                    >
-                      App Bridge
-                    </Link>{" "}
-                    interface examples like an{" "}
-                    <Link url="/app/additional" removeUnderline>
-                      additional page in the app nav
-                    </Link>
-                    , as well as an{" "}
-                    <Link
-                      url="https://shopify.dev/docs/api/admin-graphql"
-                      target="_blank"
-                      removeUnderline
-                    >
-                      Admin GraphQL
-                    </Link>{" "}
-                    mutation demo, to provide a starting point for app
-                    development.
-                  </Text>
-                </BlockStack>
-                <BlockStack gap="200">
-                  <Text as="h3" variant="headingMd">
-                    Get started with products
-                  </Text>
-                  <Text as="p" variant="bodyMd">
-                    Generate a product with GraphQL and get the JSON output for
-                    that product. Learn more about the{" "}
-                    <Link
-                      url="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-                      target="_blank"
-                      removeUnderline
-                    >
-                      productCreate
-                    </Link>{" "}
-                    mutation in our API references.
-                  </Text>
-                </BlockStack>
-                <InlineStack gap="300">
-                  <Button loading={isLoading} onClick={generateProduct}>
-                    Generate a product
-                  </Button>
-                  {fetcher.data?.product && (
-                    <Button
-                      url={`shopify:admin/products/${productId}`}
-                      target="_blank"
-                      variant="plain"
-                    >
-                      View product
-                    </Button>
+                  {shipments.length === 0 ? (
+                    <Banner>
+                      <p>No hay envíos generados recientemente</p>
+                    </Banner>
+                  ) : (
+                    <List>
+                      {shipments.map((shipment, index) => (
+                        <List.Item key={index}>
+                          <InlineStack align="space-between" blockAlign="center">
+                            <Text as="span" variant="bodyMd">
+                              Guía: {shipment.guia}
+                            </Text>
+                            <Button
+                              url={`https://www.correos.go.cr/rastreo/consulta_envios/rastreo.aspx?codigo=${shipment.guia}`}
+                              target="_blank"
+                              variant="plain"
+                            >
+                              Ver Detalles
+                            </Button>
+                          </InlineStack>
+                        </List.Item>
+                      ))}
+                    </List>
                   )}
-                </InlineStack>
-                {fetcher.data?.product && (
-                  <>
-                    <Text as="h3" variant="headingMd">
-                      {" "}
-                      productCreate mutation
-                    </Text>
-                    <Box
-                      padding="400"
-                      background="bg-surface-active"
-                      borderWidth="025"
-                      borderRadius="200"
-                      borderColor="border"
-                      overflowX="scroll"
-                    >
-                      <pre style={{ margin: 0 }}>
-                        <code>
-                          {JSON.stringify(fetcher.data.product, null, 2)}
-                        </code>
-                      </pre>
-                    </Box>
-                    <Text as="h3" variant="headingMd">
-                      {" "}
-                      productVariantsBulkUpdate mutation
-                    </Text>
-                    <Box
-                      padding="400"
-                      background="bg-surface-active"
-                      borderWidth="025"
-                      borderRadius="200"
-                      borderColor="border"
-                      overflowX="scroll"
-                    >
-                      <pre style={{ margin: 0 }}>
-                        <code>
-                          {JSON.stringify(fetcher.data.variant, null, 2)}
-                        </code>
-                      </pre>
-                    </Box>
-                  </>
-                )}
+                </BlockStack>
               </BlockStack>
             </Card>
           </Layout.Section>
+
+          {/* Sección Lateral de Información */}
           <Layout.Section variant="oneThird">
             <BlockStack gap="500">
               <Card>
                 <BlockStack gap="200">
                   <Text as="h2" variant="headingMd">
-                    App template specs
-                  </Text>
-                  <BlockStack gap="200">
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        Framework
-                      </Text>
-                      <Link
-                        url="https://remix.run"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        Remix
-                      </Link>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        Database
-                      </Text>
-                      <Link
-                        url="https://www.prisma.io/"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        Prisma
-                      </Link>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        Interface
-                      </Text>
-                      <span>
-                        <Link
-                          url="https://polaris.shopify.com"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          Polaris
-                        </Link>
-                        {", "}
-                        <Link
-                          url="https://shopify.dev/docs/apps/tools/app-bridge"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          App Bridge
-                        </Link>
-                      </span>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        API
-                      </Text>
-                      <Link
-                        url="https://shopify.dev/docs/api/admin-graphql"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        GraphQL API
-                      </Link>
-                    </InlineStack>
-                  </BlockStack>
-                </BlockStack>
-              </Card>
-              <Card>
-                <BlockStack gap="200">
-                  <Text as="h2" variant="headingMd">
-                    Next steps
+                    <Icon source={ProductsMajor} /> Cómo usar la app
                   </Text>
                   <List>
                     <List.Item>
-                      Build an{" "}
-                      <Link
-                        url="https://shopify.dev/docs/apps/getting-started/build-app-example"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        {" "}
-                        example app
-                      </Link>{" "}
-                      to get started
+                      Genera guías de envío directamente desde las órdenes de Shopify
                     </List.Item>
                     <List.Item>
-                      Explore Shopify’s API with{" "}
-                      <Link
-                        url="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        GraphiQL
+                      Rastrea paquetes en tiempo real con Correos de Costa Rica
+                    </List.Item>
+                    <List.Item>
+                      Configura tus preferencias de envío en los ajustes
+                    </List.Item>
+                  </List>
+                </BlockStack>
+              </Card>
+
+              <Card>
+                <BlockStack gap="200">
+                  <Text as="h2" variant="headingMd">
+                    Soporte y Contacto
+                  </Text>
+                  <List>
+                    <List.Item>
+                      <Link url="mailto:soporte@tudominio.com" removeUnderline>
+                        Correo de Soporte
+                      </Link>
+                    </List.Item>
+                    <List.Item>
+                      <Link url="https://correos.go.cr" target="_blank" removeUnderline>
+                        Sitio Oficial Correos
+                      </Link>
+                    </List.Item>
+                    <List.Item>
+                      <Link url="/settings" removeUnderline>
+                        Configuración de la App
                       </Link>
                     </List.Item>
                   </List>
